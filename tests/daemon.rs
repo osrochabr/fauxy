@@ -3,7 +3,7 @@
 
 mod common;
 
-use common::{TestEnv, client_via, eventually, start_upstream_http};
+use common::{TestEnv, client_via, eventually, free_port, start_upstream_http};
 use fauxy::control::ControlClient;
 use fauxy::daemon::process::locked_pid;
 use fauxy::daemon::{Daemon, RunOptions};
@@ -214,21 +214,25 @@ async fn invalid_configuration_prevents_start() {
     );
 }
 
-fn free_port() -> u16 {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.local_addr().unwrap().port()
-}
-
 #[tokio::test]
 async fn port_option_overrides_the_configuration() {
     let env = TestEnv::new();
     let config = env.write_config("config.yaml", "listen: 127.0.0.1:8899\n");
-    let port = free_port();
-    let options = RunOptions {
-        port: Some(port),
-        ..RunOptions::default()
+    let mut attempts = 0;
+    let (daemon, port) = loop {
+        let port = free_port();
+        let options = RunOptions {
+            port: Some(port),
+            ..RunOptions::default()
+        };
+        match Daemon::start(env.paths.clone(), options).await {
+            Ok(daemon) => break (daemon, port),
+            Err(err) if attempts < 3 && format!("{err:#}").contains("already in use") => {
+                attempts += 1;
+            }
+            Err(err) => panic!("{err:#}"),
+        }
     };
-    let daemon = Daemon::start(env.paths.clone(), options).await.unwrap();
     assert_eq!(daemon.proxy_addr().port(), port);
     let status = ControlClient::new(env.paths.socket())
         .status()
@@ -269,10 +273,14 @@ async fn busy_port_is_reported() {
     let message = format!("{:#}", result.err().unwrap());
     let port = addr.port();
     assert!(
-        message.starts_with(&format!("port {port} is already in use ({addr}).")),
+        message.starts_with(&format!("port {port} is already in use ({addr}); ")),
         "{message}"
     );
     assert!(message.contains("fauxy init --port <port>"), "{message}");
+    assert!(
+        message.ends_with("then run 'fauxy restart' (or restart the service)"),
+        "{message}"
+    );
 }
 
 #[tokio::test]

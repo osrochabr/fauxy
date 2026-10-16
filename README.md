@@ -123,9 +123,11 @@ the examples while your regular daemon is running, give them their own state
 directory (the example listens on port 8898):
 
 ```sh
-FAUXY_STATE_DIR=/tmp/fauxy-example fauxy --config examples/config.yaml start
-FAUXY_STATE_DIR=/tmp/fauxy-example fauxy status
-FAUXY_STATE_DIR=/tmp/fauxy-example fauxy stop
+export FAUXY_STATE_DIR="$HOME/.local/state/fauxy-example"
+fauxy --config examples/config.yaml start
+fauxy status
+fauxy stop
+unset FAUXY_STATE_DIR
 ```
 
 ## Writing rules
@@ -196,33 +198,44 @@ Changes to `listen` and `upstream` require `fauxy restart`; everything else is
 reloaded automatically. Use `--config FILE` (or `FAUXY_CONFIG`) to run with a
 project-specific configuration.
 
-### Changing the port
+## Changing the port
 
-fauxy listens on `127.0.0.1:8899` by default. The port is a setting of
-`config.yaml` (`listen`), so every command agrees on it: `start`, `restart`,
-the user service, `env`, `env --jvm-flags`, `check` and `test`.
+fauxy listens on `127.0.0.1:8899` by default. The port is the `listen` setting
+of `config.yaml`; `start`, `restart`, the user service, `env` and `check` all
+read it from there.
 
 `fauxy init --port <port>` writes it for you:
 
 ```sh
 fauxy init --port 9000    # new setup: creates config.yaml with listen: 127.0.0.1:9000
 fauxy init --port 9001    # existing setup: changes only the port of 'listen'
-fauxy restart             # or restart the service; a running daemon keeps its port until then
 ```
 
 On an existing `config.yaml`, `--port` keeps the host of `listen` (for
-example `0.0.0.0`), the comments and every other setting; files it cannot edit
-safely are reported, and you can set `listen: <port>` by hand. The other
-existing files are left alone (use `--force` to recreate them). `init` always
-works on the default configuration directory; for a file given with
-`--config`, edit `listen` directly.
+example `0.0.0.0`), the comments and every other setting, and replaces the
+file in one step. A file it cannot edit safely, a read-only file or a
+symbolic link is reported and left unchanged: set `listen: <port>` in it by
+hand (`--force` does not replace symbolic links either). The other
+existing files are left alone (use `--force` to recreate them). With
+`--config FILE` (or `FAUXY_CONFIG`), `init` works on that file and on a
+`mocks` directory next to it.
 
-After a port change, update the clients that have it: run
-`eval "$(fauxy env)"` again in your shells and paste the new
-`fauxy env --jvm-flags` output into IDE run configurations.
+A running daemon keeps its port until it restarts:
+
+```sh
+fauxy restart                                           # daemon started with fauxy start
+launchctl kickstart -k gui/$(id -u)/dev.fauxy.daemon    # user service on macOS
+systemctl --user restart fauxy-daemon                   # user service on Linux
+```
+
+Then update the clients that still use the old port:
+
+- shells: run `eval "$(fauxy env)"` (or `eval "$(fauxy env --java)"`) again;
+- IDE run configurations: paste the new `fauxy env --jvm-flags` output;
+- browsers and system proxy settings: use the address shown by `fauxy status`.
 
 When the port is taken, fauxy says so and shows how to find the program using
-it (`lsof -nP -iTCP:<port> -sTCP:LISTEN`).
+it (see [Troubleshooting](#troubleshooting)).
 
 To try another port once, without touching `config.yaml`, use
 `fauxy run --port <port>` (see
@@ -247,8 +260,9 @@ eval "$(fauxy env --unset)"         # undo
 | `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE` | OpenSSL-based tools and Python, pointing at a bundle with the system roots plus the fauxy CA |
 | `JAVA_TOOL_OPTIONS` | Only with `--java`, see below |
 
-Browsers use the system proxy settings: point them at `127.0.0.1:8899` or use a
-proxy extension. Firefox has its own certificate store; import the file printed
+Browsers use the system proxy settings: point them at the proxy address
+(`127.0.0.1:8899` by default, shown by `fauxy status`) or use a proxy
+extension. Firefox has its own certificate store; import the file printed
 by `fauxy ca path` in its settings.
 
 ## Java and Spring Boot
@@ -340,7 +354,7 @@ fauxy run                       # same configuration as `fauxy start`
 fauxy run --port 9100           # this run only listens on 9100
 FAUXY_LOG=debug fauxy run       # verbose logs
 fauxy run --no-watch            # ignore file changes (reload with `fauxy reload`)
-fauxy run --log-file /tmp/f.log # log to a file instead of the terminal
+fauxy run --log-file run.log    # log to a file; fatal errors still reach the terminal
 ```
 
 `--port` replaces the port of `listen` for that run only; `config.yaml` is not
@@ -349,23 +363,28 @@ runs, `fauxy status`, `fauxy env` and `fauxy env --jvm-flags` report the port
 in use, so clients can be pointed at it.
 
 Only one daemon runs per state directory. Stop the background daemon first
-(`fauxy stop`, or the service manager if you use the service), or run a
-separate instance with its own state directory:
+(`fauxy stop`; a user service then stays stopped until the next login or until
+you restart it with the service manager), or run a separate instance with its
+own state directory:
 
 ```sh
-FAUXY_STATE_DIR=/tmp/fauxy-debug fauxy run --port 9100
-FAUXY_STATE_DIR=/tmp/fauxy-debug fauxy env --jvm-flags
+FAUXY_STATE_DIR="$HOME/.local/state/fauxy-debug" fauxy run --port 9100
+FAUXY_STATE_DIR="$HOME/.local/state/fauxy-debug" fauxy env --jvm-flags
 ```
 
-A separate state directory has its own local CA, Java truststore and log;
-`fauxy env` with the same `FAUXY_STATE_DIR` points clients at them, and
-`fauxy ca install` trusts that CA if you need it system-wide.
+The separate instance reads the same configuration and rules (point it
+elsewhere with `FAUXY_CONFIG_DIR` or `--config`), but has its own local CA,
+Java truststore and log. `fauxy env` with the same `FAUXY_STATE_DIR` points
+clients at them; prefer that to `fauxy ca install`, because on Linux the
+system store holds one fauxy CA at a time and installing this one would
+replace your main CA. Keep state directories in a private location, not in
+`/tmp`: whoever controls one controls the CA that your clients trust.
 
 ## Command reference
 
 | Command | Description |
 |---|---|
-| `fauxy init [--force] [--port PORT]` | Create the configuration, an example file and the local CA; `--port` sets `listen` in `config.yaml` (see [Changing the port](#changing-the-port)) |
+| `fauxy init [--force] [--port PORT]` | Create the configuration (or the `--config` file), an example file and the local CA; `--port` sets `listen` in it (see [Changing the port](#changing-the-port)) |
 | `fauxy start` / `stop` / `restart` | Control the background daemon |
 | `fauxy status` | Daemon status (exit code 3 when stopped) |
 | `fauxy run [--port PORT] [--log-file F] [--no-watch]` | Run in the foreground; `--port` applies to that run only (see [Running in the foreground](#running-in-the-foreground-testing-and-debugging)) |
@@ -448,8 +467,11 @@ fauxy is a development tool that intercepts TLS, so keep these points in mind:
 - **Terminal output is sanitized:** control characters and invisible
   formatting characters (such as bidirectional overrides) received from the
   network are replaced before `fauxy logs` and the TUI print them.
-- **The state directory** must be a real directory owned by you; a symbolic
-  link or a directory owned by someone else is refused.
+- **The state directory** must be a real directory owned by you: the daemon
+  and the commands that read or create the local CA (`init`, `ca`, `env`)
+  refuse a symbolic link or a directory owned by someone else, and the other
+  commands only trust a control socket served by your own user. Keep it out of
+  shared directories such as `/tmp`.
 - `fauxy stop` only signals a process that still holds the PID file lock, so a
   stale PID file can never make it kill an unrelated process.
 
@@ -467,9 +489,11 @@ fauxy is a development tool that intercepts TLS, so keep these points in mind:
   API and adjust the rule; `fauxy test` shows which rule answers.
 - **`fauxy start` fails:** the error includes the last lines of the log. Common
   causes are an invalid rule file (`fauxy check`) or the port being in use.
-- **"port 8899 is already in use":** another program (or another fauxy) has
-  the port. Find it with `lsof -nP -iTCP:8899 -sTCP:LISTEN`, or move fauxy to
-  another port with `fauxy init --port <port>` and `fauxy restart`.
+- **"port N is already in use":** another program (or another fauxy) has the
+  port. Find it with `lsof -nP -iTCP:<port> -sTCP:LISTEN` (macOS) or
+  `ss -ltnp 'sport = :<port>'` (Linux), or move fauxy to another port with
+  `fauxy init --port <port>` and restart it (`fauxy restart`, or the service
+  commands in [Changing the port](#changing-the-port)).
 - **"the control socket path ... is too long":** Unix sockets are limited to
   about 100 characters; set `FAUXY_STATE_DIR` (or `XDG_STATE_HOME`) to a
   shorter directory.

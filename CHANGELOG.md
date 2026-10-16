@@ -9,18 +9,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `fauxy init --port <port>` sets the proxy port in `config.yaml`: it creates
-  the file with that port or updates the port of `listen` in an existing one,
-  keeping its host, comments and other settings.
+- `fauxy init --port <port>` sets the proxy port: it creates `config.yaml`
+  with that port, or updates the port of `listen` in an existing one, keeping
+  its host, comments and other settings. The file is replaced in one step;
+  symbolic links, read-only files and files it cannot edit safely are left
+  for a manual edit.
 - `fauxy run --port <port>` listens on another port for that run only,
   without changing `config.yaml`, for testing and debugging.
 
 ### Changed
 
 - A port already in use is reported as such, with the command that finds the
-  program using it and how to choose another port.
-- Fatal errors of `fauxy run` are written once, to the log.
+  program using it (`lsof` on macOS, `ss` on Linux) and how to choose another
+  port.
+- `fauxy init` honors `--config` (and `FAUXY_CONFIG`) instead of ignoring it:
+  it creates or updates that file and a `mocks` directory next to it. It also
+  shows the configuration warnings, such as a non-loopback `listen`, and
+  `--force` no longer writes through symbolic links.
+- Fatal errors of `fauxy run` are no longer written twice to the log, and
+  `FAUXY_LOG` cannot hide them. With `--log-file` they also go to stderr,
+  unless stderr is that same file.
 - "fauxy is already running" explains how to run another instance.
+
+### Fixed
+
+- Commands whose output goes to a closed pipe (such as `fauxy logs | head`)
+  end quietly instead of panicking.
+
+### Security
+
+- Commands that read or create the local CA (`env`, `ca`, `init`) refuse a
+  state directory that is a symbolic link or belongs to another user, as the
+  daemon already did. Before, `fauxy env` could point clients at a proxy and
+  a CA planted by another user in a shared directory.
+- The CLI only trusts a control socket served by its own user.
+- The documentation no longer suggests state directories under `/tmp`.
 
 ## [0.1.0] - 2026-10-16
 

@@ -237,6 +237,13 @@ pub async fn start_upstream_https(dir: &Path) -> UpstreamTls {
     }
 }
 
+/// A port that was free a moment ago. Another process can take it before it
+/// is used, so tests that bind it retry with another one.
+pub fn free_port() -> u16 {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.local_addr().unwrap().port()
+}
+
 /// Waits until `condition` holds or the timeout expires.
 pub async fn eventually(timeout: std::time::Duration, mut condition: impl FnMut() -> bool) -> bool {
     let deadline = tokio::time::Instant::now() + timeout;

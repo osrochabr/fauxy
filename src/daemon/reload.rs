@@ -74,7 +74,7 @@ impl Reloader {
             }
         };
         if let Some(port) = self.port {
-            loaded.listen.set_port(port);
+            loaded.set_port(port);
         }
         let mut notes = Vec::new();
         if loaded.listen != self.listen {
@@ -301,7 +301,7 @@ mod tests {
         let fx = Fixture::new();
         std::fs::write(fx.paths.config_file(), "listen: 127.0.0.1:8899\n").unwrap();
         let mut loaded = load(&fx.paths, None).unwrap();
-        loaded.listen.set_port(9500);
+        loaded.set_port(9500);
         let state = Arc::new(AppState::new(RuleSet::default()));
         let reloader = Reloader::new(fx.paths.clone(), None, state, loaded, Some(9500));
         let result = reloader.reload();
@@ -310,13 +310,15 @@ mod tests {
 
         std::fs::write(fx.paths.config_file(), "listen: 0.0.0.0:8899\n").unwrap();
         let result = reloader.reload();
+        assert_eq!(result.warnings.len(), 2, "{:?}", result.warnings);
         assert!(
-            result
-                .warnings
-                .iter()
-                .any(|w| w == "'listen' changed to 0.0.0.0:9500; restart fauxy to apply it"),
+            result.warnings[0].starts_with("listen address 0.0.0.0:9500 accepts connections"),
             "{:?}",
             result.warnings
+        );
+        assert_eq!(
+            result.warnings[1],
+            "'listen' changed to 0.0.0.0:9500; restart fauxy to apply it"
         );
     }
 

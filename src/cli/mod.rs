@@ -30,8 +30,8 @@ pub enum Command {
         /// Overwrite existing files.
         #[arg(long)]
         force: bool,
-        /// Proxy port to save as 'listen' in config.yaml, also in an existing
-        /// file [default for new files: 8899].
+        /// Port of 'listen' in the configuration file: used when creating it,
+        /// or updated in place in an existing one [default: 8899].
         #[arg(long, value_parser = clap::value_parser!(u16).range(1..))]
         port: Option<u16>,
     },
@@ -179,6 +179,11 @@ pub enum ServiceAction {
 
 pub fn main() -> ExitCode {
     let cli = Cli::parse();
+    // The daemon must survive clients that hang up, and the TUI must restore
+    // the terminal when the daemon goes away.
+    if !matches!(cli.command, Command::Run { .. } | Command::Ui) {
+        crate::sys::default_sigpipe();
+    }
     forget_own_bundle();
     match run(cli) {
         Ok(code) => code,

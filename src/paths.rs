@@ -116,7 +116,12 @@ impl Paths {
 pub fn create_private_dir(dir: &Path) -> io::Result<()> {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
-    std::fs::create_dir_all(dir)?;
+    std::fs::create_dir_all(dir).map_err(|err| {
+        io::Error::new(
+            err.kind(),
+            format!("cannot create {}: {err}", dir.display()),
+        )
+    })?;
     let meta = std::fs::symlink_metadata(dir)?;
     let refuse = |reason: &str| {
         let message = format!("refusing to use {}: {reason}", dir.display());

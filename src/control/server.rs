@@ -79,7 +79,7 @@ impl ControlServer {
     }
 }
 
-fn peer_uid(stream: &UnixStream) -> Option<u32> {
+pub(super) fn peer_uid(stream: &UnixStream) -> Option<u32> {
     stream.peer_cred().ok().map(|cred| cred.uid())
 }
 
@@ -354,6 +354,9 @@ pub(crate) mod tests {
         let mut answer = Vec::new();
         stream.read_to_end(&mut answer).await.unwrap();
         assert!(String::from_utf8_lossy(&answer).starts_with("HTTP/1.1 400"));
+        // The connection task logs the error after closing the socket; let it
+        // finish before the runtime is dropped.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         ctx.shutdown.cancel();
     }
 }

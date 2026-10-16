@@ -31,6 +31,9 @@ impl ClientError {
 pub struct ControlClient {
     socket: PathBuf,
     timeout: Duration,
+    /// Only a daemon of this user is trusted: its answers decide where
+    /// `fauxy env` points the clients.
+    uid: u32,
 }
 
 impl ControlClient {
@@ -38,7 +41,14 @@ impl ControlClient {
         Self {
             socket: socket.into(),
             timeout: DEFAULT_TIMEOUT,
+            uid: crate::sys::euid(),
         }
+    }
+
+    #[cfg(test)]
+    fn trusting_uid(mut self, uid: u32) -> Self {
+        self.uid = uid;
+        self
     }
 
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
@@ -108,6 +118,12 @@ impl ControlClient {
                 )),
                 _ => ClientError::transport(&err),
             })?;
+        if super::server::peer_uid(&stream) != Some(self.uid) {
+            return Err(ClientError::Transport(format!(
+                "{} is served by another user; set FAUXY_STATE_DIR to a directory of your own",
+                self.socket.display()
+            )));
+        }
         let transport = |err: hyper::Error| ClientError::transport(&err);
         let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
             .await
@@ -244,6 +260,24 @@ mod tests {
         client.shutdown().await.unwrap();
         server.wait().await;
         assert!(!path.exists(), "the socket must be removed");
+    }
+
+    #[tokio::test]
+    async fn daemons_of_other_users_are_not_trusted() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.sock");
+        let ctx = context();
+        let _server = ControlServer::bind(&path, ctx.clone()).unwrap();
+        let client = ControlClient::new(&path).trusting_uid(crate::sys::euid().wrapping_add(1));
+        let err = client.status().await.unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "failed to talk to the daemon: {} is served by another user; set FAUXY_STATE_DIR to a directory of your own",
+                path.display()
+            )
+        );
+        ctx.shutdown.cancel();
     }
 
     /// Serves one connection with a canned raw HTTP answer (or none).

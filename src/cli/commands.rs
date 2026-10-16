@@ -26,7 +26,7 @@ pub(super) fn execute(
     runtime: &Runtime,
 ) -> anyhow::Result<ExitCode> {
     match command {
-        Command::Init { force, port } => init(paths, force, port, runtime),
+        Command::Init { force, port } => init(paths, config, force, port, runtime),
         Command::Run {
             log_file,
             no_watch,
@@ -45,9 +45,15 @@ pub(super) fn execute(
             match runtime.block_on(daemon::run_foreground(paths.clone(), options)) {
                 Ok(()) => Ok(ExitCode::SUCCESS),
                 Err(err) => {
-                    // The log (stderr or --log-file) is the only output under
-                    // launchd/systemd and `fauxy start`.
-                    tracing::error!("{err:#}");
+                    // The log is the only output under launchd/systemd and
+                    // `fauxy start`, where stderr is the log file.
+                    tracing::error!(target: logging::FATAL, "{err:#}");
+                    if log_file
+                        .as_deref()
+                        .is_some_and(|log| !logging::is_stderr(log))
+                    {
+                        eprintln!("error: {err:#}");
+                    }
                     Ok(ExitCode::FAILURE)
                 }
             }
@@ -92,12 +98,15 @@ fn current_exe() -> anyhow::Result<std::path::PathBuf> {
 
 fn init(
     paths: &Paths,
+    config: Option<&Path>,
     force: bool,
     port: Option<u16>,
     runtime: &Runtime,
 ) -> anyhow::Result<ExitCode> {
-    let report = templates::init(&paths.config_dir, force, port)
-        .with_context(|| format!("cannot write to {}", paths.config_dir.display()))?;
+    // Checked before writing anything: the CA goes there.
+    paths.ensure_state_dir()?;
+    let config_file = config.map_or_else(|| paths.config_file(), Path::to_path_buf);
+    let report = templates::init(&config_file, force, port)?;
     for path in &report.created {
         println!("created: {}", path.display());
     }
@@ -107,29 +116,40 @@ fn init(
     for path in &report.skipped {
         println!("kept (already exists): {}", path.display());
     }
-    // Mock files may still be broken; that is for `fauxy check` to report.
-    if let Ok(loaded) = config::load(paths, None) {
-        let listen = loaded.listen;
-        println!("proxy address: {listen}");
-        if let Ok(status) = runtime.block_on(ControlClient::new(paths.socket()).status())
-            && status.listen != listen.to_string()
-        {
-            println!(
-                "fauxy is running on {}; restart it to use {listen}: fauxy restart (or restart the service)",
-                status.listen
-            );
+    match config::load(paths, config) {
+        Ok(loaded) => {
+            let listen = loaded.listen;
+            println!("proxy address: {listen}");
+            for warning in &loaded.warnings {
+                println!("warning: {warning}");
+            }
+            if let Ok(status) = runtime.block_on(ControlClient::new(paths.socket()).status())
+                && status.listen != listen.to_string()
+            {
+                println!(
+                    "fauxy is running on {}; run 'fauxy restart' (or restart the service) to listen on {listen}",
+                    status.listen
+                );
+            }
         }
+        // Existing mock files may be broken; init itself worked.
+        Err(_) => println!("warning: the configuration has errors; run 'fauxy check' to see them"),
     }
     let (ca, created) = LocalCa::load_or_create(paths)?;
     let verb = if created { "created" } else { "already exists" };
     println!("local CA {verb}: {}", ca.cert_path().display());
+    let mocks = config_file.parent().unwrap_or(Path::new(".")).join("mocks");
+    let fauxy = config.map_or_else(
+        || "fauxy".to_owned(),
+        |file| format!("fauxy --config {}", file.display()),
+    );
     println!(
         "\nNext steps:\n  \
          1. edit the rules in {}\n  \
-         2. fauxy ca install        trust the local CA (needed for HTTPS)\n  \
-         3. fauxy start             start the proxy in the background\n  \
-         4. eval \"$(fauxy env)\"     use the proxy in this shell (Java: fauxy env --java)",
-        paths.default_mocks_dir().display()
+         2. trust the local CA (needed for HTTPS): fauxy ca install\n  \
+         3. start the proxy in the background: {fauxy} start\n  \
+         4. use the proxy in this shell: eval \"$({fauxy} env)\" (Java: {fauxy} env --java)",
+        mocks.display()
     );
     Ok(ExitCode::SUCCESS)
 }

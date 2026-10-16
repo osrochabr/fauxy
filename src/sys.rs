@@ -17,6 +17,14 @@ pub fn new_session() {
     unsafe { libc::setsid() };
 }
 
+/// Restores the default action of SIGPIPE, so a command whose output goes to
+/// a closed pipe (`fauxy logs | head`) ends quietly instead of panicking.
+/// Not for the daemon, which must survive clients that hang up.
+pub fn default_sigpipe() {
+    // SAFETY: setting a signal disposition to SIG_DFL has no preconditions.
+    unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
+}
+
 /// Removes an environment variable. Only for the start of `main`: the
 /// environment is not synchronized with threads that read it concurrently.
 pub(crate) fn remove_env_at_startup(name: &str) {

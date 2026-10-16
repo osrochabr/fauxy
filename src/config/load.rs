@@ -69,6 +69,19 @@ pub struct LoadedConfig {
 }
 
 impl LoadedConfig {
+    /// Listens on `port` instead of the configured one (`fauxy run --port`).
+    pub fn set_port(&mut self, port: u16) {
+        let before = exposure_warning(self.listen);
+        self.listen.set_port(port);
+        if let Some(warning) = self
+            .warnings
+            .iter_mut()
+            .find(|w| Some(&**w) == before.as_ref())
+        {
+            *warning = exposure_warning(self.listen).unwrap_or_default();
+        }
+    }
+
     /// Existing directories whose changes may affect the configuration. A
     /// missing source is noticed through its parent when the parent exists.
     pub fn watch_dirs(&self) -> Vec<PathBuf> {
@@ -595,6 +608,28 @@ mod tests {
 
         fx.write("config.yaml", "listen: '[::1]:8899'\nmocks: []\n");
         assert!(fx.load().unwrap().warnings.is_empty());
+    }
+
+    #[test]
+    fn port_overrides_keep_the_warnings_accurate() {
+        let fx = Fixture::new();
+        fx.write("config.yaml", "listen: 0.0.0.0:8899\nmocks: [missing]\n");
+        let mut loaded = fx.load().unwrap();
+        loaded.set_port(9100);
+        assert_eq!(loaded.listen, "0.0.0.0:9100".parse().unwrap());
+        assert_eq!(loaded.warnings.len(), 2, "{:?}", loaded.warnings);
+        assert!(
+            loaded.warnings[0].starts_with("listen address 0.0.0.0:9100 accepts connections"),
+            "{:?}",
+            loaded.warnings
+        );
+        assert!(loaded.warnings[1].starts_with("mock source not found"));
+
+        fx.write("config.yaml", "listen: 8899\nmocks: [missing]\n");
+        let mut loaded = fx.load().unwrap();
+        loaded.set_port(9100);
+        assert_eq!(loaded.listen, "127.0.0.1:9100".parse().unwrap());
+        assert_eq!(loaded.warnings.len(), 1, "{:?}", loaded.warnings);
     }
 
     #[test]

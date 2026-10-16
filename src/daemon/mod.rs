@@ -52,9 +52,7 @@ impl Daemon {
     /// Loads the configuration and starts every component. Only one daemon
     /// may run per state directory.
     pub async fn start(paths: Paths, options: RunOptions) -> anyhow::Result<Self> {
-        paths
-            .ensure_state_dir()
-            .with_context(|| format!("cannot create {}", paths.state_dir.display()))?;
+        paths.ensure_state_dir()?;
         let socket = paths.checked_socket()?;
         let pid_file = PidFile::acquire(&paths.pid_file(), std::process::id())?;
         // Holding the lock means no other daemon owns the socket.
@@ -66,7 +64,7 @@ impl Daemon {
         let mut loaded = config::load(&paths, options.config_file.as_deref())
             .map_err(|errors| anyhow::anyhow!("invalid configuration:\n{errors}"))?;
         if let Some(port) = options.port {
-            loaded.listen.set_port(port);
+            loaded.set_port(port);
         }
         for warning in &loaded.warnings {
             tracing::warn!("{warning}");
@@ -164,6 +162,13 @@ impl Daemon {
     }
 }
 
+/// Command that shows which program listens on `PORT`.
+const FIND_LISTENER: &str = if cfg!(target_os = "linux") {
+    "ss -ltnp 'sport = :PORT'"
+} else {
+    "lsof -nP -iTCP:PORT -sTCP:LISTEN"
+};
+
 /// Says how to free the port or pick another one when it is already taken.
 fn bind_error(
     err: &std::io::Error,
@@ -175,16 +180,17 @@ fn bind_error(
         return anyhow::anyhow!("cannot listen on {listen}: {err}");
     }
     let port = listen.port();
-    let fix = match from_flag {
-        Some(_) => "pass another --port".to_owned(),
-        None => format!(
-            "'fauxy init --port <port>' sets 'listen' in {}, then run 'fauxy restart'",
+    let find = FIND_LISTENER.replace("PORT", &port.to_string());
+    let free = format!(
+        "port {port} is already in use ({listen}); stop the program using it (find it with '{find}')"
+    );
+    match from_flag {
+        Some(_) => anyhow::anyhow!("{free} or pass another --port"),
+        None => anyhow::anyhow!(
+            "{free} or move fauxy with 'fauxy init --port <port>', which sets 'listen' in {}; then run 'fauxy restart' (or restart the service)",
             config_file.display()
         ),
-    };
-    anyhow::anyhow!(
-        "port {port} is already in use ({listen}). Stop the program that uses it (find it with 'lsof -nP -iTCP:{port} -sTCP:LISTEN') or choose another port: {fix}"
-    )
+    }
 }
 
 fn build_status(
@@ -242,33 +248,42 @@ mod tests {
     #[test]
     fn bind_errors_explain_how_to_change_the_port() {
         let listen = "127.0.0.1:8899".parse().unwrap();
+        let config = Path::new("/c/config.yaml");
         let in_use = std::io::Error::from(std::io::ErrorKind::AddrInUse);
-        let message = bind_error(&in_use, listen, Path::new("/c/config.yaml"), None).to_string();
-        assert!(
-            message.starts_with("port 8899 is already in use (127.0.0.1:8899)."),
-            "{message}"
+        let find = FIND_LISTENER.replace("PORT", "8899");
+        assert_eq!(
+            bind_error(&in_use, listen, config, None).to_string(),
+            format!(
+                "port 8899 is already in use (127.0.0.1:8899); stop the program using it (find it with '{find}') or move fauxy with 'fauxy init --port <port>', which sets 'listen' in /c/config.yaml; then run 'fauxy restart' (or restart the service)"
+            )
         );
-        assert!(
-            message.contains("lsof -nP -iTCP:8899 -sTCP:LISTEN"),
-            "{message}"
-        );
-        assert!(
-            message.contains("'fauxy init --port <port>' sets 'listen' in /c/config.yaml"),
-            "{message}"
+        assert_eq!(
+            bind_error(&in_use, listen, config, Some(8899)).to_string(),
+            format!(
+                "port 8899 is already in use (127.0.0.1:8899); stop the program using it (find it with '{find}') or pass another --port"
+            )
         );
 
-        let flagged =
-            bind_error(&in_use, listen, Path::new("/c/config.yaml"), Some(8899)).to_string();
+        let ipv6 = "[::1]:9100".parse().unwrap();
+        let message = bind_error(&in_use, ipv6, config, Some(9100)).to_string();
         assert!(
-            flagged.ends_with("or choose another port: pass another --port"),
-            "{flagged}"
+            message.starts_with("port 9100 is already in use ([::1]:9100); "),
+            "{message}"
         );
 
         let other = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
-        let message = bind_error(&other, listen, Path::new("/c/config.yaml"), None).to_string();
         assert_eq!(
-            message,
+            bind_error(&other, listen, config, None).to_string(),
             "cannot listen on 127.0.0.1:8899: permission denied"
+        );
+    }
+
+    #[test]
+    fn listener_finder_matches_the_platform() {
+        assert_eq!(
+            FIND_LISTENER.starts_with("ss -ltnp"),
+            cfg!(target_os = "linux"),
+            "{FIND_LISTENER}"
         );
     }
 

@@ -9,13 +9,19 @@ pub const LOG_ENV: &str = "FAUXY_LOG";
 
 pub const DEFAULT_FILTER: &str = "info,hudsucker=warn";
 
+/// Target of fatal errors, which `FAUXY_LOG` cannot hide.
+pub const FATAL: &str = "fauxy::fatal";
+
 /// Larger log files are rotated when the daemon starts.
 pub const MAX_LOG_BYTES: u64 = 10 * 1024 * 1024;
 
 /// Logs to `log_file` (appending, owner-only) or to stderr.
 pub fn init(log_file: Option<&Path>) -> io::Result<()> {
-    let filter =
+    let mut filter =
         EnvFilter::try_from_env(LOG_ENV).unwrap_or_else(|_| EnvFilter::new(DEFAULT_FILTER));
+    if let Ok(fatal) = format!("{FATAL}=error").parse() {
+        filter = filter.add_directive(fatal);
+    }
     let builder = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(false);
@@ -38,6 +44,21 @@ pub fn init(log_file: Option<&Path>) -> io::Result<()> {
     // A subscriber may already be installed (tests run in one process).
     drop(result);
     Ok(())
+}
+
+/// Whether stderr writes to `path`, as it does under `fauxy start`.
+pub fn is_stderr(path: &Path) -> bool {
+    use std::os::fd::AsFd;
+    use std::os::unix::fs::MetadataExt;
+
+    let stderr = io::stderr().as_fd().try_clone_to_owned();
+    match (
+        stderr.and_then(|fd| std::fs::File::from(fd).metadata()),
+        std::fs::metadata(path),
+    ) {
+        (Ok(stderr), Ok(file)) => stderr.dev() == file.dev() && stderr.ino() == file.ino(),
+        _ => false,
+    }
 }
 
 /// Renames `path` to `path.1` when it is larger than `max_bytes`.
@@ -119,6 +140,15 @@ mod tests {
         let mode = std::fs::metadata(&log).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
         init(None).unwrap();
+    }
+
+    #[test]
+    fn stderr_is_not_an_ordinary_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("f.log");
+        assert!(!is_stderr(&log), "missing file");
+        std::fs::write(&log, "").unwrap();
+        assert!(!is_stderr(&log));
     }
 
     #[test]

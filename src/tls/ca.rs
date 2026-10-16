@@ -25,6 +25,9 @@ const CA_VALIDITY_YEARS: i32 = 10;
 pub enum CaError {
     #[error("{}: {source}", path.display())]
     Io { path: PathBuf, source: io::Error },
+    /// An unusable state or CA directory; the message names it.
+    #[error(transparent)]
+    Dir(io::Error),
     #[error("invalid CA certificate: {0}")]
     Certificate(String),
 }
@@ -85,9 +88,12 @@ impl LocalCa {
         Ok((cert.pem(), key.serialize_pem()))
     }
 
-    /// Loads the CA from the state directory, if it exists. A private key
-    /// readable by other users is restricted to the owner again.
+    /// Loads the CA from the state directory, if it exists. The directory
+    /// must be private (see [`create_private_dir`]), since whoever controls it
+    /// controls the CA that clients trust. A private key readable by other
+    /// users is restricted to the owner again.
     pub fn load(paths: &Paths) -> Result<Option<Self>, CaError> {
+        paths.ensure_state_dir().map_err(CaError::Dir)?;
         let cert_path = paths.ca_cert();
         let key_path = paths.ca_key();
         if !cert_path.exists() || !key_path.exists() {
@@ -123,7 +129,7 @@ impl LocalCa {
         let (cert_pem, key_pem) = Self::generate(&format!("fauxy local CA {created}"))?;
 
         let dir = paths.ca_dir();
-        create_private_dir(&dir).map_err(CaError::io(&dir))?;
+        create_private_dir(&dir).map_err(CaError::Dir)?;
         write_file(&paths.ca_key(), &key_pem, 0o600)?;
         write_file(&paths.ca_cert(), &cert_pem, 0o644)?;
         let ca = Self {
@@ -311,10 +317,29 @@ mod tests {
             config_dir: dir.path().join("config"),
             state_dir: blocker,
         };
-        assert!(matches!(
-            LocalCa::load_or_create(&paths),
-            Err(CaError::Io { .. })
-        ));
+        let err = LocalCa::load_or_create(&paths).unwrap_err();
+        assert!(matches!(err, CaError::Dir(_)), "{err:?}");
+        assert!(err.to_string().starts_with("cannot create "), "{err}");
+    }
+
+    #[test]
+    fn state_dirs_that_others_could_control_are_refused() {
+        let (dir, mut paths) = paths();
+        let real = dir.path().join("real");
+        LocalCa::load_or_create(&Paths {
+            state_dir: real.clone(),
+            ..paths.clone()
+        })
+        .unwrap();
+        paths.state_dir = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &paths.state_dir).unwrap();
+        for result in [
+            LocalCa::load(&paths).map(|_| ()),
+            LocalCa::load_or_create(&paths).map(|_| ()),
+        ] {
+            let err = result.unwrap_err().to_string();
+            assert!(err.ends_with("it is a symbolic link"), "{err}");
+        }
     }
 
     #[test]

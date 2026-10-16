@@ -7,7 +7,7 @@
 
 mod common;
 
-use common::{MAIL_API, TestEnv, client_via, write_script};
+use common::{MAIL_API, TestEnv, client_via, free_port, write_script};
 use fauxy::control::ControlClient;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -206,7 +206,111 @@ fn init_port_sets_listen_in_the_configuration() {
     env.write_mock("broken.yaml", "rules: [\n");
     let output = fauxy(&env, &["init", "--port", "9102"]);
     assert!(output.status.success(), "broken mocks do not block init");
-    assert!(!stdout(&output).contains("proxy address"));
+    let text = stdout(&output);
+    assert!(
+        text.contains("warning: the configuration has errors; run 'fauxy check' to see them\n"),
+        "{text}"
+    );
+    assert!(!text.contains("proxy address"), "{text}");
+    assert!(text.contains("local CA already exists: "), "{text}");
+}
+
+#[test]
+fn init_port_warns_about_exposed_addresses() {
+    let env = TestEnv::new();
+    let config = env.write_config("config.yaml", "listen: 0.0.0.0:8899\nmocks: [mocks]\n");
+    let text = stdout(&fauxy(&env, &["init", "--port", "9104"]));
+    assert!(text.contains("proxy address: 0.0.0.0:9104\n"), "{text}");
+    assert!(
+        text.contains(
+            "warning: listen address 0.0.0.0:9104 accepts connections from other machines"
+        ),
+        "{text}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(config).unwrap(),
+        "listen: 0.0.0.0:9104\nmocks: [mocks]\n"
+    );
+}
+
+#[test]
+fn init_port_refuses_files_it_cannot_edit() {
+    let env = TestEnv::new();
+    std::fs::remove_dir_all(&env.paths.config_dir).unwrap();
+    let config = env.write_config("config.yaml", "{\"mocks\": [\"mocks\"]}\n");
+    let output = fauxy(&env, &["init", "--port", "9105"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        stderr(&output),
+        format!(
+            "error: cannot set the port of {} automatically; set 'listen: 9105' in it by hand\n",
+            config.display()
+        )
+    );
+    assert!(stdout(&output).is_empty());
+    assert!(
+        !env.paths.default_mocks_dir().exists(),
+        "nothing else was created"
+    );
+    assert!(!env.paths.ca_cert().exists());
+}
+
+#[test]
+fn init_works_on_the_file_given_with_config() {
+    let env = TestEnv::new();
+    let project = env.dir.path().join("project");
+    let config = project.join("fauxy.yaml");
+    let output = fauxy(
+        &env,
+        &[
+            "--config",
+            config.to_str().unwrap(),
+            "init",
+            "--port",
+            "9106",
+        ],
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    let text = stdout(&output);
+    assert!(
+        text.contains(&format!("created: {}", config.display())),
+        "{text}"
+    );
+    let example = project.join("mocks/example.yaml");
+    assert!(
+        text.contains(&format!("created: {}", example.display())),
+        "{text}"
+    );
+    assert!(text.contains("proxy address: 127.0.0.1:9106\n"), "{text}");
+    assert!(
+        text.contains(&format!(
+            "1. edit the rules in {}",
+            project.join("mocks").display()
+        )),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!(
+            "3. start the proxy in the background: fauxy --config {} start",
+            config.display()
+        )),
+        "{text}"
+    );
+    assert!(
+        !env.paths.config_file().exists(),
+        "the default file is left alone"
+    );
+
+    let output = command(&env, &["init", "--port", "9107"])
+        .env("FAUXY_CONFIG", &config)
+        .output()
+        .unwrap();
+    let text = stdout(&output);
+    assert!(
+        text.contains(&format!("updated the port in: {}", config.display())),
+        "{text}"
+    );
+    assert!(text.contains("proxy address: 127.0.0.1:9107\n"), "{text}");
 }
 
 #[test]
@@ -223,11 +327,19 @@ fn init_port_asks_to_restart_a_running_daemon() {
     let text = stdout(&fauxy(&env, &["init", "--port", "9103"]));
     assert!(
         text.contains(&format!(
-            "fauxy is running on {}; restart it to use 127.0.0.1:9103: fauxy restart (or restart the service)",
+            "fauxy is running on {}; run 'fauxy restart' (or restart the service) to listen on 127.0.0.1:9103\n",
             running.listen
         )),
         "{text}"
     );
+
+    env.write_config("config.yaml", &format!("listen: {}\n", running.listen));
+    let text = stdout(&fauxy(&env, &["init"]));
+    assert!(
+        text.contains(&format!("proxy address: {}\n", running.listen)),
+        "{text}"
+    );
+    assert!(!text.contains("fauxy is running"), "same address: {text}");
 }
 
 #[test]
@@ -240,8 +352,9 @@ fn init_reports_unwritable_directories() {
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(1));
+    let config = blocker.join("config/config.yaml");
     assert!(
-        stderr(&output).starts_with("error: cannot write to"),
+        stderr(&output).starts_with(&format!("error: cannot write {}: ", config.display())),
         "{}",
         stderr(&output)
     );
@@ -692,6 +805,8 @@ fn start_reports_daemons_that_exit_during_startup() {
     );
     assert!(text.contains("is already in use"), "{text}");
     assert!(text.contains("fauxy init --port <port>"), "{text}");
+    let log = std::fs::read_to_string(env.paths.log_file()).unwrap();
+    assert_eq!(log.matches("is already in use").count(), 1, "{log}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -917,24 +1032,41 @@ fn version_and_help() {
     }
 }
 
+/// `fauxy run --port <free port> --no-watch`, retried with another port when
+/// a parallel test takes it first. Returns the child and the port.
+fn run_on_free_port(env: &TestEnv) -> (Child, u16) {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let log = env.dir.path().join("run-stderr.log");
+    for _ in 0..3 {
+        let port = free_port();
+        let mut child = command(env, &["run", "--port", &port.to_string(), "--no-watch"])
+            .stderr(File::create(&log).unwrap())
+            .spawn()
+            .unwrap();
+        let client = ControlClient::new(env.paths.socket());
+        let started = wait_until(Duration::from_secs(15), || {
+            runtime.block_on(client.status()).is_ok() || child.try_wait().unwrap().is_some()
+        });
+        assert!(started, "the daemon neither started nor failed");
+        if child.try_wait().unwrap().is_none() {
+            return (child, port);
+        }
+        let stderr = std::fs::read_to_string(&log).unwrap();
+        assert!(stderr.contains("is already in use"), "{stderr}");
+    }
+    panic!("no free port after 3 attempts");
+}
+
 #[test]
 fn foreground_run_on_another_port() {
     let env = TestEnv::new();
     let config = env.write_config("config.yaml", "listen: 127.0.0.1:0\n");
-    let port = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-        .to_string();
-    let mut child = command(&env, &["run", "--port", &port, "--no-watch"])
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
+    let (mut child, port) = run_on_free_port(&env);
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let status = || runtime.block_on(ControlClient::new(env.paths.socket()).status());
-    assert!(wait_until(Duration::from_secs(15), || status().is_ok()));
-    assert_eq!(status().unwrap().listen, format!("127.0.0.1:{port}"));
+    let status = runtime
+        .block_on(ControlClient::new(env.paths.socket()).status())
+        .unwrap();
+    assert_eq!(status.listen, format!("127.0.0.1:{port}"));
 
     let exports = stdout(&fauxy(&env, &["env"]));
     assert!(
@@ -946,6 +1078,7 @@ fn foreground_run_on_another_port() {
         "listen: 127.0.0.1:0\n"
     );
 
+    // Refused on the PID file lock, before any port is bound.
     let second = fauxy(&env, &["run", "--port", "1"]);
     assert_eq!(second.status.code(), Some(1));
     let text = stderr(&second);
@@ -1001,18 +1134,111 @@ fn foreground_run_rejects_invalid_configuration() {
     let output = fauxy(&env, &["run", "--log-file", log.to_str().unwrap()]);
     assert_eq!(output.status.code(), Some(1));
     let logged = std::fs::read_to_string(&log).unwrap();
-    assert!(
-        logged.contains("ERROR invalid configuration:"),
+    assert_eq!(
+        logged.matches("ERROR invalid configuration:").count(),
+        1,
         "services only have the log: {logged}"
     );
     assert!(logged.contains("rule has no host"), "{logged}");
+    let text = stderr(&output);
+    assert!(
+        text.starts_with("error: invalid configuration:\n"),
+        "the terminal gets it too: {text}"
+    );
+    assert!(text.contains("rule has no host"), "{text}");
 
     let output = fauxy(&env, &["run"]);
+    assert_eq!(output.status.code(), Some(1));
+    let text = stderr(&output);
+    assert_eq!(text.matches("invalid configuration:").count(), 1, "{text}");
+    assert!(text.contains("rule has no host"), "{text}");
+}
+
+#[test]
+fn fatal_errors_ignore_the_log_filter() {
+    let env = TestEnv::new();
+    env.write_mock("bad.yaml", "rules:\n  - respond: {}\n");
+    let output = command(&env, &["run"])
+        .env("FAUXY_LOG", "off")
+        .output()
+        .unwrap();
     assert_eq!(output.status.code(), Some(1));
     assert!(
         stderr(&output).contains("rule has no host"),
         "{}",
         stderr(&output)
+    );
+
+    let log = env.dir.path().join("run.log");
+    let output = command(&env, &["run", "--log-file", log.to_str().unwrap()])
+        .env("FAUXY_LOG", "fauxy=off")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let logged = std::fs::read_to_string(&log).unwrap();
+    assert!(logged.contains("rule has no host"), "{logged}");
+    assert!(
+        stderr(&output).contains("rule has no host"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn output_to_a_closed_pipe_ends_quietly() {
+    use std::os::unix::process::ExitStatusExt;
+
+    let env = TestEnv::new();
+    let (reader, writer) = std::io::pipe().unwrap();
+    drop(reader);
+    let output = command(&env, &["env", "--unset"])
+        .stdout(writer)
+        .stderr(Stdio::piped())
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.signal(),
+        Some(libc::SIGPIPE),
+        "{:?}",
+        output.status
+    );
+    assert_eq!(stderr(&output), "");
+}
+
+#[test]
+fn state_dirs_others_could_control_are_refused() {
+    let env = TestEnv::new();
+    let real = env.dir.path().join("real-state");
+    std::fs::create_dir_all(&real).unwrap();
+    let link = env.dir.path().join("linked-state");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    for args in [
+        &["env"][..],
+        &["env", "--jvm-flags"],
+        &["ca", "path"],
+        &["init"],
+    ] {
+        let output = command(&env, args)
+            .env("FAUXY_STATE_DIR", &link)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        assert_eq!(
+            stderr(&output),
+            format!(
+                "error: refusing to use {}: it is a symbolic link\n",
+                link.display()
+            ),
+            "{args:?}"
+        );
+    }
+    assert!(
+        !real.join("ca").exists(),
+        "nothing was written through the link"
+    );
+    assert!(
+        !env.paths.config_file().exists(),
+        "init stops before writing anything"
     );
 }
 
