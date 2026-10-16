@@ -17,7 +17,7 @@ use crate::tls::{LocalCa, client_config};
 use anyhow::Context;
 use process::PidFile;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
@@ -75,7 +75,7 @@ impl Daemon {
         let upstream = client_config(&loaded.upstream_ca_files)?;
         let listener = TcpListener::bind(loaded.listen)
             .await
-            .with_context(|| format!("cannot listen on {}", loaded.listen))?;
+            .map_err(|err| bind_error(&err, loaded.listen, &loaded.config_file))?;
 
         let state = Arc::new(AppState::new(Default::default()));
         let shutdown = CancellationToken::new();
@@ -158,6 +158,18 @@ impl Daemon {
     }
 }
 
+/// Says how to free the port or pick another one when it is already taken.
+fn bind_error(err: &std::io::Error, listen: SocketAddr, config_file: &Path) -> anyhow::Error {
+    if err.kind() != std::io::ErrorKind::AddrInUse {
+        return anyhow::anyhow!("cannot listen on {listen}: {err}");
+    }
+    let port = listen.port();
+    anyhow::anyhow!(
+        "port {port} is already in use ({listen}). Stop the program that uses it (find it with 'lsof -nP -iTCP:{port} -sTCP:LISTEN') or choose another port: 'fauxy init --port <port>' sets 'listen' in {}, then run 'fauxy restart'",
+        config_file.display()
+    )
+}
+
 fn build_status(
     state: &AppState,
     listen: SocketAddr,
@@ -209,6 +221,32 @@ mod tests {
     use super::*;
     use crate::rules::RuleSet;
     use crate::rules::test_support::rule;
+
+    #[test]
+    fn bind_errors_explain_how_to_change_the_port() {
+        let listen = "127.0.0.1:8899".parse().unwrap();
+        let in_use = std::io::Error::from(std::io::ErrorKind::AddrInUse);
+        let message = bind_error(&in_use, listen, Path::new("/c/config.yaml")).to_string();
+        assert!(
+            message.starts_with("port 8899 is already in use (127.0.0.1:8899)."),
+            "{message}"
+        );
+        assert!(
+            message.contains("lsof -nP -iTCP:8899 -sTCP:LISTEN"),
+            "{message}"
+        );
+        assert!(
+            message.contains("'fauxy init --port <port>' sets 'listen' in /c/config.yaml"),
+            "{message}"
+        );
+
+        let other = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        let message = bind_error(&other, listen, Path::new("/c/config.yaml")).to_string();
+        assert_eq!(
+            message,
+            "cannot listen on 127.0.0.1:8899: permission denied"
+        );
+    }
 
     #[test]
     fn status_reports_rules_and_hosts() {

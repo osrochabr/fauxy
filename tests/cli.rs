@@ -151,6 +151,7 @@ fn init_creates_configuration_and_ca() {
         "{text}"
     );
     assert!(text.contains("local CA created: "), "{text}");
+    assert!(text.contains("proxy address: 127.0.0.1:8899\n"), "{text}");
     assert!(text.contains("Next steps:"), "{text}");
     assert!(config.exists());
     assert!(env.paths.default_mocks_dir().join("example.yaml").exists());
@@ -162,6 +163,71 @@ fn init_creates_configuration_and_ca() {
 
     let forced = stdout(&fauxy(&env, &["init", "--force"]));
     assert!(forced.contains("created: "), "{forced}");
+}
+
+#[test]
+fn init_port_sets_listen_in_the_configuration() {
+    let env = TestEnv::new();
+    std::fs::remove_dir_all(&env.paths.config_dir).unwrap();
+    let config = env.paths.config_file();
+
+    let text = stdout(&fauxy(&env, &["init", "--port", "9100"]));
+    assert!(
+        text.contains(&format!("created: {}", config.display())),
+        "{text}"
+    );
+    assert!(text.contains("proxy address: 127.0.0.1:9100\n"), "{text}");
+    assert!(
+        std::fs::read_to_string(&config)
+            .unwrap()
+            .contains("\nlisten: 127.0.0.1:9100\n")
+    );
+
+    let text = stdout(&fauxy(&env, &["init", "--port", "9101"]));
+    assert!(
+        text.contains(&format!("updated the port in: {}", config.display())),
+        "{text}"
+    );
+    assert!(
+        !text.contains(&format!("kept (already exists): {}", config.display())),
+        "{text}"
+    );
+    assert!(text.contains("proxy address: 127.0.0.1:9101\n"), "{text}");
+    let content = std::fs::read_to_string(&config).unwrap();
+    assert!(
+        content.starts_with("# fauxy global configuration."),
+        "comments are kept"
+    );
+    assert!(content.contains("\nlisten: 127.0.0.1:9101\n"), "{content}");
+
+    let output = fauxy(&env, &["init", "--port", "0"]);
+    assert_eq!(output.status.code(), Some(2), "port 0 is rejected");
+
+    env.write_mock("broken.yaml", "rules: [\n");
+    let output = fauxy(&env, &["init", "--port", "9102"]);
+    assert!(output.status.success(), "broken mocks do not block init");
+    assert!(!stdout(&output).contains("proxy address"));
+}
+
+#[test]
+fn init_port_asks_to_restart_a_running_daemon() {
+    let env = TestEnv::new();
+    env.write_config("config.yaml", "listen: 127.0.0.1:0\n");
+    let _guard = StopOnDrop(&env);
+    assert!(fauxy(&env, &["start"]).status.success());
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let running = runtime
+        .block_on(ControlClient::new(env.paths.socket()).status())
+        .unwrap();
+
+    let text = stdout(&fauxy(&env, &["init", "--port", "9103"]));
+    assert!(
+        text.contains(&format!(
+            "fauxy is running on {}; restart it to use 127.0.0.1:9103: fauxy restart (or restart the service)",
+            running.listen
+        )),
+        "{text}"
+    );
 }
 
 #[test]
@@ -624,7 +690,8 @@ fn start_reports_daemons_that_exit_during_startup() {
         text.starts_with("error: fauxy exited during startup; last lines of"),
         "{text}"
     );
-    assert!(text.contains("cannot listen on"), "{text}");
+    assert!(text.contains("is already in use"), "{text}");
+    assert!(text.contains("fauxy init --port <port>"), "{text}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -890,11 +957,19 @@ fn foreground_run_rejects_invalid_configuration() {
     let log = env.dir.path().join("run.log");
     let output = fauxy(&env, &["run", "--log-file", log.to_str().unwrap()]);
     assert_eq!(output.status.code(), Some(1));
-    assert!(stderr(&output).contains("rule has no host"));
     let logged = std::fs::read_to_string(&log).unwrap();
     assert!(
-        logged.contains("rule has no host"),
+        logged.contains("ERROR invalid configuration:"),
         "services only have the log: {logged}"
+    );
+    assert!(logged.contains("rule has no host"), "{logged}");
+
+    let output = fauxy(&env, &["run"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stderr(&output).contains("rule has no host"),
+        "{}",
+        stderr(&output)
     );
 }
 

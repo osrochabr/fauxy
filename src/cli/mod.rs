@@ -30,6 +30,10 @@ pub enum Command {
         /// Overwrite existing files.
         #[arg(long)]
         force: bool,
+        /// Proxy port to save as 'listen' in config.yaml, also in an existing
+        /// file [default for new files: 8899].
+        #[arg(long, value_parser = clap::value_parser!(u16).range(1..))]
+        port: Option<u16>,
     },
     /// Run the daemon in the foreground (also used by launchd/systemd).
     Run {

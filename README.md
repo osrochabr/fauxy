@@ -26,6 +26,7 @@ through untouched, so fauxy can stay on all day without breaking other traffic.
 - [Installation](#installation)
 - [Quick start](#quick-start)
 - [Writing rules](#writing-rules)
+- [Changing the port](#changing-the-port)
 - [Routing applications through fauxy](#routing-applications-through-fauxy)
 - [Java and Spring Boot](#java-and-spring-boot)
 - [HTTPS and the local CA](#https-and-the-local-ca)
@@ -194,6 +195,34 @@ Changes to `listen` and `upstream` require `fauxy restart`; everything else is
 reloaded automatically. Use `--config FILE` (or `FAUXY_CONFIG`) to run with a
 project-specific configuration.
 
+### Changing the port
+
+fauxy listens on `127.0.0.1:8899` by default. The port is a setting of
+`config.yaml` (`listen`), so every command agrees on it: `start`, `restart`,
+the user service, `env`, `env --jvm-flags`, `check` and `test`.
+
+`fauxy init --port <port>` writes it for you:
+
+```sh
+fauxy init --port 9000    # new setup: creates config.yaml with listen: 127.0.0.1:9000
+fauxy init --port 9001    # existing setup: changes only the port of 'listen'
+fauxy restart             # or restart the service; a running daemon keeps its port until then
+```
+
+On an existing `config.yaml`, `--port` keeps the host of `listen` (for
+example `0.0.0.0`), the comments and every other setting; files it cannot edit
+safely are reported, and you can set `listen: <port>` by hand. The other
+existing files are left alone (use `--force` to recreate them). `init` always
+works on the default configuration directory; for a file given with
+`--config`, edit `listen` directly.
+
+After a port change, update the clients that have it: run
+`eval "$(fauxy env)"` again in your shells and paste the new
+`fauxy env --jvm-flags` output into IDE run configurations.
+
+When the port is taken, fauxy says so and shows how to find the program using
+it (`lsof -nP -iTCP:<port> -sTCP:LISTEN`).
+
 ## Routing applications through fauxy
 
 `fauxy env` prints the variables most tools understand:
@@ -300,7 +329,7 @@ the binary.
 
 | Command | Description |
 |---|---|
-| `fauxy init [--force]` | Create the configuration, an example file and the local CA |
+| `fauxy init [--force] [--port PORT]` | Create the configuration, an example file and the local CA; `--port` sets `listen` in `config.yaml` (see [Changing the port](#changing-the-port)) |
 | `fauxy start` / `stop` / `restart` | Control the background daemon |
 | `fauxy status` | Daemon status (exit code 3 when stopped) |
 | `fauxy run [--log-file F] [--no-watch]` | Run in the foreground |
@@ -402,6 +431,9 @@ fauxy is a development tool that intercepts TLS, so keep these points in mind:
   API and adjust the rule; `fauxy test` shows which rule answers.
 - **`fauxy start` fails:** the error includes the last lines of the log. Common
   causes are an invalid rule file (`fauxy check`) or the port being in use.
+- **"port 8899 is already in use":** another program (or another fauxy) has
+  the port. Find it with `lsof -nP -iTCP:8899 -sTCP:LISTEN`, or move fauxy to
+  another port with `fauxy init --port <port>` and `fauxy restart`.
 - **"the control socket path ... is too long":** Unix sockets are limited to
   about 100 characters; set `FAUXY_STATE_DIR` (or `XDG_STATE_HOME`) to a
   shorter directory.

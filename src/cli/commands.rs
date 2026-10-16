@@ -26,7 +26,7 @@ pub(super) fn execute(
     runtime: &Runtime,
 ) -> anyhow::Result<ExitCode> {
     match command {
-        Command::Init { force } => init(paths, force),
+        Command::Init { force, port } => init(paths, force, port, runtime),
         Command::Run {
             log_file,
             no_watch,
@@ -40,13 +40,15 @@ pub(super) fn execute(
                 config_file: config.map(Path::to_path_buf),
                 no_watch,
             };
-            let result = runtime.block_on(daemon::run_foreground(paths.clone(), options));
-            // Under launchd/systemd stderr is not the log file.
-            if let Err(err) = &result {
-                tracing::error!("{err:#}");
+            match runtime.block_on(daemon::run_foreground(paths.clone(), options)) {
+                Ok(()) => Ok(ExitCode::SUCCESS),
+                Err(err) => {
+                    // The log (stderr or --log-file) is the only output under
+                    // launchd/systemd and `fauxy start`.
+                    tracing::error!("{err:#}");
+                    Ok(ExitCode::FAILURE)
+                }
             }
-            result?;
-            Ok(ExitCode::SUCCESS)
         }
         Command::Start => runtime.block_on(start(paths, config)),
         Command::Stop => runtime.block_on(stop(paths)),
@@ -86,14 +88,35 @@ fn current_exe() -> anyhow::Result<std::path::PathBuf> {
     std::env::current_exe().context("cannot locate the fauxy executable")
 }
 
-fn init(paths: &Paths, force: bool) -> anyhow::Result<ExitCode> {
-    let report = templates::init(&paths.config_dir, force)
+fn init(
+    paths: &Paths,
+    force: bool,
+    port: Option<u16>,
+    runtime: &Runtime,
+) -> anyhow::Result<ExitCode> {
+    let report = templates::init(&paths.config_dir, force, port)
         .with_context(|| format!("cannot write to {}", paths.config_dir.display()))?;
     for path in &report.created {
         println!("created: {}", path.display());
     }
+    for path in &report.updated {
+        println!("updated the port in: {}", path.display());
+    }
     for path in &report.skipped {
         println!("kept (already exists): {}", path.display());
+    }
+    // Mock files may still be broken; that is for `fauxy check` to report.
+    if let Ok(loaded) = config::load(paths, None) {
+        let listen = loaded.listen;
+        println!("proxy address: {listen}");
+        if let Ok(status) = runtime.block_on(ControlClient::new(paths.socket()).status())
+            && status.listen != listen.to_string()
+        {
+            println!(
+                "fauxy is running on {}; restart it to use {listen}: fauxy restart (or restart the service)",
+                status.listen
+            );
+        }
     }
     let (ca, created) = LocalCa::load_or_create(paths)?;
     let verb = if created { "created" } else { "already exists" };

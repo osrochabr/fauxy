@@ -219,10 +219,12 @@ async fn busy_port_is_reported() {
     env.write_config("config.yaml", &format!("listen: {addr}\n"));
     let result = Daemon::start(env.paths.clone(), RunOptions::default()).await;
     let message = format!("{:#}", result.err().unwrap());
+    let port = addr.port();
     assert!(
-        message.starts_with(&format!("cannot listen on {addr}")),
+        message.starts_with(&format!("port {port} is already in use ({addr}).")),
         "{message}"
     );
+    assert!(message.contains("fauxy init --port <port>"), "{message}");
 }
 
 #[tokio::test]
