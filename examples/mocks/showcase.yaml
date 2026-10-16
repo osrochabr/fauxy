@@ -1,0 +1,39 @@
+# Every matching and response option, on example.com hosts.
+host: api.example.com
+
+rules:
+  - name: login
+    match:
+      method: [POST, PUT]
+      path: /v1/login
+      headers: { X-Tenant: acme }
+    respond:
+      status: 200
+      headers: { Set-Cookie: "session=fake; HttpOnly" }
+      json: { token: abc123, expires_in: 3600 }
+
+  - name: user-by-id
+    match:
+      method: GET
+      path: /v1/users/:id         # :name and * match one segment, ** any number
+      query: { verbose: "*" }     # "*" means present with any value
+    respond:
+      headers: { Content-Type: application/json }
+      body: '{"id": 1, "name": "Alice"}'
+      delay: 300ms
+
+  - name: payments-outage
+    enabled: false                # fauxy rules enable payments-outage
+    match:
+      url: https://payments.example.com/v2/charges
+    respond:
+      status: 503
+      headers: { Retry-After: "30" }
+      body: service unavailable
+
+  - name: missing-assets
+    match:
+      host: "*.cdn.example.com"   # subdomains only, not cdn.example.com itself
+      path: /assets/**
+    respond:
+      status: 404

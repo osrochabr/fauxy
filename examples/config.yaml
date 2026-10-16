@@ -1,0 +1,10 @@
+# Project-local configuration. Try it with:
+#   fauxy --config examples/config.yaml check
+#   FAUXY_STATE_DIR=/tmp/fauxy-example fauxy --config examples/config.yaml start
+# The port differs from the default one, so it can run next to your regular
+# daemon.
+listen: 127.0.0.1:8898
+
+# Relative to this file.
+mocks:
+  - mocks

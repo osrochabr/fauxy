@@ -1,0 +1,63 @@
+[package]
+name = "fauxy"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+description = "Local HTTP/HTTPS mock proxy configured with YAML files"
+license = "MIT"
+repository = "https://github.com/osrochabr/fauxy"
+readme = "README.md"
+keywords = ["proxy", "mock", "http", "mitm", "cli"]
+categories = ["command-line-utilities", "development-tools::testing", "network-programming"]
+# Not published to crates.io yet.
+publish = false
+
+[dependencies]
+anyhow = "1.0.104"
+base64 = "0.23.1"
+bytes = "1.12.1"
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
+clap = { version = "4.6.7", features = ["derive", "env"] }
+http = "1.5.0"
+http-body-util = "0.1.5"
+hudsucker = { version = "0.25.0", default-features = false, features = ["rcgen-ca", "rustls-client"] }
+humantime = "2.4.0"
+hyper = { version = "1.12.0", features = ["client", "server", "http1"] }
+hyper-rustls = { version = "0.27.10", default-features = false, features = ["http1", "tls12", "logging", "aws-lc-rs"] }
+hyper-util = { version = "0.1.21", features = ["tokio"] }
+libc = "0.2"
+notify-debouncer-mini = "0.7.0"
+ratatui = "0.30.2"
+rcgen = { version = "0.14.10", default-features = false, features = ["pem", "ring", "x509-parser"] }
+ring = "0.17.14"
+rustls = { version = "0.23.46", default-features = false, features = ["aws_lc_rs", "std", "tls12", "logging"] }
+rustls-native-certs = "0.8.5"
+serde = { version = "1.0.229", features = ["derive"] }
+serde-saphyr = { version = "2.0.0", default-features = false, features = ["deserialize"] }
+serde_json = "1.0.154"
+service-manager = "0.11.0"
+thiserror = "2.0.21"
+tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "net", "signal", "fs", "time", "sync", "process", "io-util"] }
+tokio-util = "0.7.20"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+[dev-dependencies]
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider"] }
+tempfile = "3.27.0"
+tokio-rustls = { version = "0.26", default-features = false, features = ["logging", "tls12", "aws_lc_rs"] }
+x509-parser = "0.18"
+
+[lints.rust]
+unsafe_code = "deny"
+unreachable_pub = "warn"
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "warn"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

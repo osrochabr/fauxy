@@ -1,0 +1,28 @@
+# Mock of an email delivery API. Its client library fetches a template before
+# sending and only accepts 201 when a message is created, so a bare `{}` for
+# every request is not enough.
+host: mail.example.com
+
+rules:
+  - name: mail-template
+    match:
+      method: GET
+      path: /templates/:id
+    respond:
+      status: 200
+      file: fixtures/template.json
+
+  - name: mail-send
+    match:
+      method: POST
+      path: /messages
+    respond:
+      status: 201
+      json: { id: msg-123, status: queued }
+
+  # Anything else on the host answers 200 with an empty JSON object.
+  - name: mail-catch-all
+    match:
+      path: /**
+    respond:
+      json: {}
