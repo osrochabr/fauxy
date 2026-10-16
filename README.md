@@ -31,6 +31,7 @@ through untouched, so fauxy can stay on all day without breaking other traffic.
 - [Java and Spring Boot](#java-and-spring-boot)
 - [HTTPS and the local CA](#https-and-the-local-ca)
 - [Running as a service](#running-as-a-service)
+- [Running in the foreground (testing and debugging)](#running-in-the-foreground-testing-and-debugging)
 - [Command reference](#command-reference)
 - [Terminal UI](#terminal-ui)
 - [Files and environment variables](#files-and-environment-variables)
@@ -223,6 +224,10 @@ After a port change, update the clients that have it: run
 When the port is taken, fauxy says so and shows how to find the program using
 it (`lsof -nP -iTCP:<port> -sTCP:LISTEN`).
 
+To try another port once, without touching `config.yaml`, use
+`fauxy run --port <port>` (see
+[Running in the foreground](#running-in-the-foreground-testing-and-debugging)).
+
 ## Routing applications through fauxy
 
 `fauxy env` prints the variables most tools understand:
@@ -325,6 +330,37 @@ daemon that launchd/systemd does not supervise:
 `systemctl --user restart fauxy-daemon` on Linux. Do the same after upgrading
 the binary.
 
+## Running in the foreground (testing and debugging)
+
+`fauxy run` runs the daemon in your terminal instead of in the background:
+every request is logged as it happens, and `Ctrl-C` stops it.
+
+```sh
+fauxy run                       # same configuration as `fauxy start`
+fauxy run --port 9100           # this run only listens on 9100
+FAUXY_LOG=debug fauxy run       # verbose logs
+fauxy run --no-watch            # ignore file changes (reload with `fauxy reload`)
+fauxy run --log-file /tmp/f.log # log to a file instead of the terminal
+```
+
+`--port` replaces the port of `listen` for that run only; `config.yaml` is not
+changed, so the next `fauxy start` uses the configured port again. While it
+runs, `fauxy status`, `fauxy env` and `fauxy env --jvm-flags` report the port
+in use, so clients can be pointed at it.
+
+Only one daemon runs per state directory. Stop the background daemon first
+(`fauxy stop`, or the service manager if you use the service), or run a
+separate instance with its own state directory:
+
+```sh
+FAUXY_STATE_DIR=/tmp/fauxy-debug fauxy run --port 9100
+FAUXY_STATE_DIR=/tmp/fauxy-debug fauxy env --jvm-flags
+```
+
+A separate state directory has its own local CA, Java truststore and log;
+`fauxy env` with the same `FAUXY_STATE_DIR` points clients at them, and
+`fauxy ca install` trusts that CA if you need it system-wide.
+
 ## Command reference
 
 | Command | Description |
@@ -332,7 +368,7 @@ the binary.
 | `fauxy init [--force] [--port PORT]` | Create the configuration, an example file and the local CA; `--port` sets `listen` in `config.yaml` (see [Changing the port](#changing-the-port)) |
 | `fauxy start` / `stop` / `restart` | Control the background daemon |
 | `fauxy status` | Daemon status (exit code 3 when stopped) |
-| `fauxy run [--log-file F] [--no-watch]` | Run in the foreground |
+| `fauxy run [--port PORT] [--log-file F] [--no-watch]` | Run in the foreground; `--port` applies to that run only (see [Running in the foreground](#running-in-the-foreground-testing-and-debugging)) |
 | `fauxy reload` | Reload the rules now |
 | `fauxy logs [-f] [-n N]` | Daemon log, including every request (MOCK, PASS, TUNNEL, ERROR) |
 | `fauxy rules [list\|enable NAME\|disable NAME]` | List rules or toggle them in memory until the daemon restarts |

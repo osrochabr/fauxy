@@ -123,8 +123,8 @@ async fn manual_reload_reports_errors() {
     env.write_config("config.yaml", CONFIG);
     env.write_mock("a.yaml", &mock_for("a.test", "a", "a"));
     let options = RunOptions {
-        config_file: None,
         no_watch: true,
+        ..RunOptions::default()
     };
     let daemon = Daemon::start(env.paths.clone(), options).await.unwrap();
     let client = ControlClient::new(env.paths.socket());
@@ -162,7 +162,10 @@ async fn only_one_instance_runs_per_state_dir() {
         .to_string();
     assert_eq!(
         message,
-        format!("fauxy is already running (pid {})", std::process::id())
+        format!(
+            "fauxy is already running (pid {}); stop it first, or set FAUXY_STATE_DIR to run another instance",
+            std::process::id()
+        )
     );
     assert!(
         env.paths.socket().exists(),
@@ -209,6 +212,51 @@ async fn invalid_configuration_prevents_start() {
         None,
         "the lock is released on failure"
     );
+}
+
+fn free_port() -> u16 {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.local_addr().unwrap().port()
+}
+
+#[tokio::test]
+async fn port_option_overrides_the_configuration() {
+    let env = TestEnv::new();
+    let config = env.write_config("config.yaml", "listen: 127.0.0.1:8899\n");
+    let port = free_port();
+    let options = RunOptions {
+        port: Some(port),
+        ..RunOptions::default()
+    };
+    let daemon = Daemon::start(env.paths.clone(), options).await.unwrap();
+    assert_eq!(daemon.proxy_addr().port(), port);
+    let status = ControlClient::new(env.paths.socket())
+        .status()
+        .await
+        .unwrap();
+    assert_eq!(status.listen, format!("127.0.0.1:{port}"));
+    assert_eq!(
+        std::fs::read_to_string(config).unwrap(),
+        "listen: 127.0.0.1:8899\n",
+        "the configuration is not changed"
+    );
+    daemon.shutdown_token().cancel();
+    daemon.wait().await.unwrap();
+}
+
+#[tokio::test]
+async fn busy_port_given_as_option_is_reported() {
+    let env = TestEnv::new();
+    env.write_config("config.yaml", CONFIG);
+    let busy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let options = RunOptions {
+        port: Some(busy.local_addr().unwrap().port()),
+        ..RunOptions::default()
+    };
+    let result = Daemon::start(env.paths.clone(), options).await;
+    let message = format!("{:#}", result.err().unwrap());
+    assert!(message.contains("is already in use"), "{message}");
+    assert!(message.ends_with("pass another --port"), "{message}");
 }
 
 #[tokio::test]

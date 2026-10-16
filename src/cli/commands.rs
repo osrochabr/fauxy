@@ -30,6 +30,7 @@ pub(super) fn execute(
         Command::Run {
             log_file,
             no_watch,
+            port,
             detach,
         } => {
             if detach {
@@ -39,6 +40,7 @@ pub(super) fn execute(
             let options = RunOptions {
                 config_file: config.map(Path::to_path_buf),
                 no_watch,
+                port,
             };
             match runtime.block_on(daemon::run_foreground(paths.clone(), options)) {
                 Ok(()) => Ok(ExitCode::SUCCESS),
@@ -145,9 +147,7 @@ async fn start(paths: &Paths, config: Option<&Path>) -> anyhow::Result<ExitCode>
             }
             println!("use the proxy with: eval \"$(fauxy env)\"   (Java: fauxy env --java)");
         }
-        Err(ProcessError::AlreadyRunning(pid)) => println!(
-            "fauxy is already running (pid {pid}); stop it first, or set FAUXY_STATE_DIR to run another instance"
-        ),
+        Err(err @ ProcessError::AlreadyRunning(_)) => println!("{err}"),
         Err(err) => return Err(err.into()),
     }
     Ok(ExitCode::SUCCESS)

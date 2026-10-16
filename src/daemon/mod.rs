@@ -35,6 +35,8 @@ pub struct RunOptions {
     pub config_file: Option<PathBuf>,
     /// Disables hot reload.
     pub no_watch: bool,
+    /// Replaces the port of `listen` for this run (`fauxy run --port`).
+    pub port: Option<u16>,
 }
 
 pub struct Daemon {
@@ -61,8 +63,11 @@ impl Daemon {
                 .with_context(|| format!("cannot remove {}", socket.display()))?;
         }
 
-        let loaded = config::load(&paths, options.config_file.as_deref())
+        let mut loaded = config::load(&paths, options.config_file.as_deref())
             .map_err(|errors| anyhow::anyhow!("invalid configuration:\n{errors}"))?;
+        if let Some(port) = options.port {
+            loaded.listen.set_port(port);
+        }
         for warning in &loaded.warnings {
             tracing::warn!("{warning}");
         }
@@ -75,7 +80,7 @@ impl Daemon {
         let upstream = client_config(&loaded.upstream_ca_files)?;
         let listener = TcpListener::bind(loaded.listen)
             .await
-            .map_err(|err| bind_error(&err, loaded.listen, &loaded.config_file))?;
+            .map_err(|err| bind_error(&err, loaded.listen, &loaded.config_file, options.port))?;
 
         let state = Arc::new(AppState::new(Default::default()));
         let shutdown = CancellationToken::new();
@@ -89,6 +94,7 @@ impl Daemon {
             options.config_file.clone(),
             Arc::clone(&state),
             loaded,
+            options.port,
         ));
 
         let started_at_ms = now_ms();
@@ -159,14 +165,25 @@ impl Daemon {
 }
 
 /// Says how to free the port or pick another one when it is already taken.
-fn bind_error(err: &std::io::Error, listen: SocketAddr, config_file: &Path) -> anyhow::Error {
+fn bind_error(
+    err: &std::io::Error,
+    listen: SocketAddr,
+    config_file: &Path,
+    from_flag: Option<u16>,
+) -> anyhow::Error {
     if err.kind() != std::io::ErrorKind::AddrInUse {
         return anyhow::anyhow!("cannot listen on {listen}: {err}");
     }
     let port = listen.port();
+    let fix = match from_flag {
+        Some(_) => "pass another --port".to_owned(),
+        None => format!(
+            "'fauxy init --port <port>' sets 'listen' in {}, then run 'fauxy restart'",
+            config_file.display()
+        ),
+    };
     anyhow::anyhow!(
-        "port {port} is already in use ({listen}). Stop the program that uses it (find it with 'lsof -nP -iTCP:{port} -sTCP:LISTEN') or choose another port: 'fauxy init --port <port>' sets 'listen' in {}, then run 'fauxy restart'",
-        config_file.display()
+        "port {port} is already in use ({listen}). Stop the program that uses it (find it with 'lsof -nP -iTCP:{port} -sTCP:LISTEN') or choose another port: {fix}"
     )
 }
 
@@ -226,7 +243,7 @@ mod tests {
     fn bind_errors_explain_how_to_change_the_port() {
         let listen = "127.0.0.1:8899".parse().unwrap();
         let in_use = std::io::Error::from(std::io::ErrorKind::AddrInUse);
-        let message = bind_error(&in_use, listen, Path::new("/c/config.yaml")).to_string();
+        let message = bind_error(&in_use, listen, Path::new("/c/config.yaml"), None).to_string();
         assert!(
             message.starts_with("port 8899 is already in use (127.0.0.1:8899)."),
             "{message}"
@@ -240,8 +257,15 @@ mod tests {
             "{message}"
         );
 
+        let flagged =
+            bind_error(&in_use, listen, Path::new("/c/config.yaml"), Some(8899)).to_string();
+        assert!(
+            flagged.ends_with("or choose another port: pass another --port"),
+            "{flagged}"
+        );
+
         let other = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
-        let message = bind_error(&other, listen, Path::new("/c/config.yaml")).to_string();
+        let message = bind_error(&other, listen, Path::new("/c/config.yaml"), None).to_string();
         assert_eq!(
             message,
             "cannot listen on 127.0.0.1:8899: permission denied"

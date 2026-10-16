@@ -918,6 +918,49 @@ fn version_and_help() {
 }
 
 #[test]
+fn foreground_run_on_another_port() {
+    let env = TestEnv::new();
+    let config = env.write_config("config.yaml", "listen: 127.0.0.1:0\n");
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+        .to_string();
+    let mut child = command(&env, &["run", "--port", &port, "--no-watch"])
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let status = || runtime.block_on(ControlClient::new(env.paths.socket()).status());
+    assert!(wait_until(Duration::from_secs(15), || status().is_ok()));
+    assert_eq!(status().unwrap().listen, format!("127.0.0.1:{port}"));
+
+    let exports = stdout(&fauxy(&env, &["env"]));
+    assert!(
+        exports.contains(&format!("export HTTPS_PROXY='http://127.0.0.1:{port}'")),
+        "{exports}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&config).unwrap(),
+        "listen: 127.0.0.1:0\n"
+    );
+
+    let second = fauxy(&env, &["run", "--port", "1"]);
+    assert_eq!(second.status.code(), Some(1));
+    let text = stderr(&second);
+    assert!(text.contains("fauxy is already running (pid "), "{text}");
+    assert!(
+        text.contains("set FAUXY_STATE_DIR to run another instance"),
+        "{text}"
+    );
+
+    signal(&child, libc::SIGTERM);
+    assert!(wait_for_exit(&mut child).success());
+    assert_eq!(fauxy(&env, &["run", "--port", "0"]).status.code(), Some(2));
+}
+
+#[test]
 fn foreground_run_stops_on_signals() {
     for sig in [libc::SIGTERM, libc::SIGINT] {
         let env = TestEnv::new();

@@ -12,12 +12,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `fauxy init --port <port>` sets the proxy port in `config.yaml`: it creates
   the file with that port or updates the port of `listen` in an existing one,
   keeping its host, comments and other settings.
+- `fauxy run --port <port>` listens on another port for that run only,
+  without changing `config.yaml`, for testing and debugging.
 
 ### Changed
 
 - A port already in use is reported as such, with the command that finds the
   program using it and how to choose another port.
 - Fatal errors of `fauxy run` are written once, to the log.
+- "fauxy is already running" explains how to run another instance.
 
 ## [0.1.0] - 2026-10-16
 

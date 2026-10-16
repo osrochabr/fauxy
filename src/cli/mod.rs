@@ -43,6 +43,9 @@ pub enum Command {
         /// Disable hot reload when files change.
         #[arg(long)]
         no_watch: bool,
+        /// Listen on this port for this run only; config.yaml is not changed.
+        #[arg(long, value_parser = clap::value_parser!(u16).range(1..))]
+        port: Option<u16>,
         /// Leave the terminal session (used by `fauxy start`).
         #[arg(long, hide = true)]
         detach: bool,

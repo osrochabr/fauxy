@@ -27,6 +27,8 @@ pub struct Reloader {
     state: Arc<AppState>,
     /// Settings that only apply on restart.
     listen: SocketAddr,
+    /// `fauxy run --port`, applied to every reload as well.
+    port: Option<u16>,
     upstream_ca_files: Vec<PathBuf>,
     current: Mutex<LoadedConfig>,
 }
@@ -38,11 +40,13 @@ impl Reloader {
         config_file: Option<PathBuf>,
         state: Arc<AppState>,
         initial: LoadedConfig,
+        port: Option<u16>,
     ) -> Self {
         let reloader = Self {
             paths,
             config_file,
             listen: initial.listen,
+            port,
             upstream_ca_files: initial.upstream_ca_files.clone(),
             state,
             current: Mutex::new(initial.clone()),
@@ -54,7 +58,7 @@ impl Reloader {
     /// Loads the configuration again; on errors the current rules are kept.
     pub fn reload(&self) -> ReloadResult {
         let mut current = self.current.lock().unwrap_or_else(PoisonError::into_inner);
-        let loaded = match config::load(&self.paths, self.config_file.as_deref()) {
+        let mut loaded = match config::load(&self.paths, self.config_file.as_deref()) {
             Ok(loaded) => loaded,
             Err(errors) => {
                 let message = errors.to_string();
@@ -69,6 +73,9 @@ impl Reloader {
                 };
             }
         };
+        if let Some(port) = self.port {
+            loaded.listen.set_port(port);
+        }
         let mut notes = Vec::new();
         if loaded.listen != self.listen {
             notes.push(format!(
@@ -239,6 +246,7 @@ mod tests {
                 None,
                 Arc::clone(&state),
                 loaded,
+                None,
             ));
             (reloader, state)
         }
@@ -286,6 +294,30 @@ mod tests {
         std::fs::remove_file(fx.paths.default_mocks_dir().join("c.yaml")).unwrap();
         assert!(reloader.reload().ok);
         assert!(state.info().last_reload_error.is_none());
+    }
+
+    #[test]
+    fn port_given_on_the_command_line_survives_reloads() {
+        let fx = Fixture::new();
+        std::fs::write(fx.paths.config_file(), "listen: 127.0.0.1:8899\n").unwrap();
+        let mut loaded = load(&fx.paths, None).unwrap();
+        loaded.listen.set_port(9500);
+        let state = Arc::new(AppState::new(RuleSet::default()));
+        let reloader = Reloader::new(fx.paths.clone(), None, state, loaded, Some(9500));
+        let result = reloader.reload();
+        assert!(result.ok);
+        assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+
+        std::fs::write(fx.paths.config_file(), "listen: 0.0.0.0:8899\n").unwrap();
+        let result = reloader.reload();
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|w| w == "'listen' changed to 0.0.0.0:9500; restart fauxy to apply it"),
+            "{:?}",
+            result.warnings
+        );
     }
 
     #[test]

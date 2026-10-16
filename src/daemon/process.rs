@@ -15,7 +15,9 @@ pub const STOP_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProcessError {
-    #[error("fauxy is already running (pid {0})")]
+    #[error(
+        "fauxy is already running (pid {0}); stop it first, or set FAUXY_STATE_DIR to run another instance"
+    )]
     AlreadyRunning(u32),
     #[error("fauxy exited during startup; last lines of {}:\n{log}", path.display())]
     StartFailed { path: PathBuf, log: String },
@@ -261,7 +263,11 @@ mod tests {
         assert_eq!(read_pid(&path), Some(4242));
         assert_eq!(locked_pid(&path), Some(4242));
         let err = PidFile::acquire(&path, 1).unwrap_err();
-        assert_eq!(err.to_string(), "fauxy is already running (pid 4242)");
+        assert!(
+            err.to_string()
+                .starts_with("fauxy is already running (pid 4242);"),
+            "{err}"
+        );
 
         drop(held);
         assert_eq!(locked_pid(&path), None);
